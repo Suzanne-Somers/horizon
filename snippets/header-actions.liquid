@@ -766,12 +766,6 @@
   const messageTemplate = {{ shipping_message | json }};
   const successMessage = {{ shipping_success_message | json }};
   
-  const shippingBar = document.getElementById('cart-drawer-shipping-bar');
-  const progressFill = document.getElementById('cart-shipping-progress-fill');
-  const messageEl = document.getElementById('cart-shipping-message');
-  
-  if (!shippingBar || !progressFill || !messageEl) return;
-  
   function formatMoney(cents) {
     return new Intl.NumberFormat('en-US', {
       style: 'currency',
@@ -786,11 +780,20 @@
       const response = await fetch('/cart.js');
       return await response.json();
     } catch (error) {
+      console.log('Cart drawer shipping: Error fetching cart', error);
       return null;
     }
   }
   
   function updateCartDrawerShippingBar() {
+    const shippingBar = document.getElementById('cart-drawer-shipping-bar');
+    const progressFill = document.getElementById('cart-shipping-progress-fill');
+    const messageEl = document.getElementById('cart-shipping-message');
+    
+    if (!shippingBar || !progressFill || !messageEl) {
+      return; // Elements not in DOM yet
+    }
+    
     getCart().then(cart => {
       if (!cart || cart.items.length === 0) {
         shippingBar.style.display = 'none';
@@ -825,33 +828,36 @@
         progressFill.style.width = `${percentage}%`;
         progressFill.style.background = 'rgb(var(--color-button))';
       }
+    }).catch(error => {
+      console.log('Cart drawer shipping: Error updating bar', error);
     });
   }
   
-  // Initial update
-  updateCartDrawerShippingBar();
-  
-  // Listen for cart updates
-  document.addEventListener('cart:update', updateCartDrawerShippingBar);
-  document.addEventListener('cart:updated', updateCartDrawerShippingBar);
-  document.addEventListener('cart:change', updateCartDrawerShippingBar);
-  document.addEventListener('cart:refresh', updateCartDrawerShippingBar);
-  
-  // Also update when cart drawer opens
-  const cartDrawer = document.querySelector('cart-drawer-component');
-  if (cartDrawer) {
-    cartDrawer.addEventListener('dialog:opened', updateCartDrawerShippingBar);
+  // Wait for DOM to be ready
+  function init() {
+    // Initial update after a short delay to ensure elements exist
+    setTimeout(updateCartDrawerShippingBar, 100);
+    
+    // Listen for cart updates
+    document.addEventListener('cart:update', updateCartDrawerShippingBar);
+    document.addEventListener('cart:updated', updateCartDrawerShippingBar);
+    document.addEventListener('cart:change', updateCartDrawerShippingBar);
+    document.addEventListener('cart:refresh', updateCartDrawerShippingBar);
+    
+    // Also update when cart drawer opens
+    const cartDrawer = document.querySelector('cart-drawer-component');
+    if (cartDrawer) {
+      cartDrawer.addEventListener('dialog:opened', () => {
+        setTimeout(updateCartDrawerShippingBar, 100);
+      });
+    }
   }
   
-  // Intercept fetch to detect cart changes
-  const originalFetch = window.fetch;
-  window.fetch = async function(...args) {
-    const response = await originalFetch.apply(this, args);
-    const url = args[0];
-    if (typeof url === 'string' && (url.includes('/cart/add') || url.includes('/cart/change') || url.includes('/cart/update'))) {
-      setTimeout(updateCartDrawerShippingBar, 200);
-    }
-    return response;
-  };
+  // Initialize when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
 })();
 </script>
