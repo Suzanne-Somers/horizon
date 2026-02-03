@@ -178,9 +178,16 @@
     color: var(--color-foreground);
     pointer-events: all;
     position: absolute;
-    right: max(var(--quick-add-right), calc((var(--border-radius) + var(--quick-add-right)) * (1 - cos(45deg))));
-    bottom: max(var(--quick-add-bottom), calc((var(--border-radius) + var(--quick-add-bottom)) * (1 - cos(45deg))));
-    backdrop-filter: blur(20px) saturate(180%);
+    left: 50%;
+    bottom: var(--padding-lg);
+    transform: translateX(-50%);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    transition: opacity 0.3s ease, transform 0.3s ease;
+    width: auto;
+    min-width: 200px;
+    justify-content: space-between;
+    gap: var(--gap-md);
+    z-index: var(--layer-raised);
 
     &:active {
       scale: 0.99;
