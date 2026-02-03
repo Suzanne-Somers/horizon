@@ -180,7 +180,6 @@
                 
                 <div class="cart-drawer__shipping-bar" id="cart-drawer-shipping-bar">
                   <div class="cart-drawer__shipping-content">
-                    <p class="cart-drawer__shipping-title">Your order ships free!</p>
                     <div class="cart-drawer__shipping-progress">
                       <div class="cart-drawer__shipping-progress-fill" id="cart-shipping-progress-fill"></div>
                     </div>
@@ -757,6 +756,12 @@
   .cart-drawer__summary shopify-payment-terms {
     display: none !important;
   }
+
+  /* Hide app embed shipping bar when inside cart drawer */
+  .cart-drawer #free-shipping-bar,
+  cart-drawer-component #free-shipping-bar {
+    display: none !important;
+  }
 {% endstylesheet %}
 
 {% comment %} Free Shipping Bar JavaScript for Cart Drawer {% endcomment %}
@@ -766,7 +771,7 @@
   
   {% assign shipping_threshold = shop.metafields.shipping.free_threshold | default: 50 %}
   {% assign shipping_message = shop.metafields.shipping.message | default: 'Add {amount} more for free shipping!' %}
-  {% assign shipping_success_message = shop.metafields.shipping.success_message | default: 'You qualify for free Standard Shipping!' %}
+  {% assign shipping_success_message = shop.metafields.shipping.success_message | default: 'You qualify for free shipping!' %}
   
   const threshold = {{ shipping_threshold }};
   const messageTemplate = {{ shipping_message | json }};
