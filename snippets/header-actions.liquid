@@ -523,28 +523,29 @@
   .cart-drawer__shipping-content {
     display: flex;
     flex-direction: column;
-    gap: var(--gap-sm);
+    gap: var(--gap-md);
   }
 
   .cart-drawer__shipping-title {
-    font-size: var(--font-size--sm);
-    font-weight: 500;
+    font-size: var(--font-size--md);
+    font-weight: 600;
     color: var(--color-foreground);
     margin: 0;
+    line-height: 1.2;
   }
 
   .cart-drawer__shipping-progress {
     width: 100%;
-    height: 8px;
+    height: 10px;
     background: rgb(var(--color-border));
-    border-radius: 4px;
+    border-radius: 5px;
     overflow: hidden;
   }
 
   .cart-drawer__shipping-progress-fill {
     height: 100%;
     background: rgb(var(--color-button));
-    border-radius: 4px;
+    border-radius: 5px;
     transition: width 0.3s ease;
     width: 0%;
   }
@@ -553,22 +554,25 @@
     display: flex;
     align-items: center;
     gap: var(--gap-xs);
-    font-size: var(--font-size--xs);
+    font-size: var(--font-size--sm);
+    font-weight: 500;
     color: var(--color-foreground);
+    line-height: 1.4;
   }
 
   .cart-drawer__shipping-message--qualified {
     color: rgb(var(--color-success));
   }
 
-  .cart-drawer__shipping-message--qualified .cart-drawer__shipping-progress-fill {
+  .cart-drawer__shipping-bar--qualified .cart-drawer__shipping-progress-fill {
     background: rgb(var(--color-success));
   }
 
   .cart-drawer__shipping-checkmark {
-    width: 16px;
-    height: 16px;
+    width: 18px;
+    height: 18px;
     flex-shrink: 0;
+    color: rgb(var(--color-success));
   }
 
   .cart-drawer__items {
