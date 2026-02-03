@@ -1,5 +1,9 @@
 {% liquid
   assign block_settings = block.settings
+  assign is_drawer = false
+  if drawer_context == 'drawer'
+    assign is_drawer = true
+  endif
 %}
 
 <script
@@ -53,7 +57,7 @@
       method="post"
     >
       <div
-        class="cart-items spacing-style{% if block_settings.dividers %} cart-items--dividers{% endif %}"
+        class="cart-items spacing-style{% if block_settings.dividers %} cart-items--dividers{% endif %}{% if is_drawer %} cart-items--drawer{% endif %}"
         style="{%  render 'spacing-style', settings: block_settings %} --cart-items-gap:{{ block_settings.gap | append: "px" }};"
       >
         <table
@@ -232,36 +236,38 @@
                     </ul>
                   {% endif %}
 
-                  <div>
-                    {% if item.original_price != item.final_price %}
-                      <span class="visually-hidden">{{ 'content.price_sale' | t }}</span>
-                      <span>{{ item.final_price | money }}</span>
-                      <span class="visually-hidden">{{ 'content.price_regular' | t }}</span>
-                      <s class="compare-at-price">
-                        {% if item.variant.compare_at_price > item.original_price %}
-                          {{ item.variant.compare_at_price | money }}
-                        {% else %}
-                          {{ item.original_price | money }}
-                        {% endif %}
-                      </s>
-                    {% else %}
-                      {% if item.variant.compare_at_price > item.original_price %}
+                  {% unless is_drawer %}
+                    <div>
+                      {% if item.original_price != item.final_price %}
                         <span class="visually-hidden">{{ 'content.price_sale' | t }}</span>
-                      {% else %}
-                        <span class="visually-hidden">{{ 'content.price' | t }}</span>
-                      {% endif %}
-
-                      <span>{{ item.original_price | money }}</span>
-
-                      {% if item.variant.compare_at_price > item.original_price %}
+                        <span>{{ item.final_price | money }}</span>
                         <span class="visually-hidden">{{ 'content.price_regular' | t }}</span>
-                        <s class="compare-at-price">{{ item.variant.compare_at_price | money }}</s>
+                        <s class="compare-at-price">
+                          {% if item.variant.compare_at_price > item.original_price %}
+                            {{ item.variant.compare_at_price | money }}
+                          {% else %}
+                            {{ item.original_price | money }}
+                          {% endif %}
+                        </s>
+                      {% else %}
+                        {% if item.variant.compare_at_price > item.original_price %}
+                          <span class="visually-hidden">{{ 'content.price_sale' | t }}</span>
+                        {% else %}
+                          <span class="visually-hidden">{{ 'content.price' | t }}</span>
+                        {% endif %}
+
+                        <span>{{ item.original_price | money }}</span>
+
+                        {% if item.variant.compare_at_price > item.original_price %}
+                          <span class="visually-hidden">{{ 'content.price_regular' | t }}</span>
+                          <s class="compare-at-price">{{ item.variant.compare_at_price | money }}</s>
+                        {% endif %}
                       {% endif %}
-                    {% endif %}
-                  </div>
+                    </div>
+                  {% endunless %}
                 </td>
                 <td
-                  class="cart-items__quantity"
+                  class="cart-items__quantity{% if is_drawer %} cart-items__quantity--drawer{% endif %}"
                   role="cell"
                   headers="quantity"
                 >
@@ -269,12 +275,51 @@
                   {% assign can_update_quantity = item.instructions.can_update_quantity
                     | default: true, allow_false: true
                   %}
-                  <div class="cart-items__quantity-controls">
-                    {% render 'volume-pricing-info',
-                      variant: item.variant,
-                      unique_id: item.index,
-                      quantity: item.quantity
-                    %}
+                  <div class="cart-items__quantity-controls{% if is_drawer %} cart-items__quantity-controls--drawer{% endif %}">
+                    {% unless is_drawer %}
+                      {% render 'volume-pricing-info',
+                        variant: item.variant,
+                        unique_id: item.index,
+                        quantity: item.quantity
+                      %}
+                    {% endunless %}
+
+                    {% if is_drawer %}
+                      {%- liquid
+                        if settings.currency_code_enabled_cart_items
+                          assign price = item.final_line_price | money_with_currency
+                        else
+                          assign price = item.final_line_price | money
+                        endif
+                      -%}
+                      <div class="cart-items__price cart-items__price--drawer cart-secondary-typography">
+                        {% if item.original_price != item.final_price %}
+                          <span class="visually-hidden">{{ 'content.price_sale' | t }}</span>
+                          <span>{{ item.final_price | money }}</span>
+                          <span class="visually-hidden">{{ 'content.price_regular' | t }}</span>
+                          <s class="compare-at-price">
+                            {% if item.variant.compare_at_price > item.original_price %}
+                              {{ item.variant.compare_at_price | money }}
+                            {% else %}
+                              {{ item.original_price | money }}
+                            {% endif %}
+                          </s>
+                        {% else %}
+                          {% if item.variant.compare_at_price > item.original_price %}
+                            <span class="visually-hidden">{{ 'content.price_sale' | t }}</span>
+                          {% else %}
+                            <span class="visually-hidden">{{ 'content.price' | t }}</span>
+                          {% endif %}
+
+                          <span>{{ item.original_price | money }}</span>
+
+                          {% if item.variant.compare_at_price > item.original_price %}
+                            <span class="visually-hidden">{{ 'content.price_regular' | t }}</span>
+                            <s class="compare-at-price">{{ item.variant.compare_at_price | money }}</s>
+                          {% endif %}
+                        {% endif %}
+                      </div>
+                    {% endif %}
 
                     {% render 'quantity-selector',
                       product: item.product,
@@ -285,19 +330,29 @@
                       can_update_quantity: can_update_quantity
                     %}
 
-                    <button
-                      class="button button--tertiary cart-items__remove"
-                      type="button"
-                      aria-label="{{ 'accessibility.remove_item' | t: title: item.title | escape }}"
-                      on:click="/onLineItemRemove/{{ item.index | plus: 1 }}"
-                      {% assign can_remove = item.instructions.can_remove | default: true, allow_false: true %}
-                      {% if can_remove == false %}
-                        hidden
-                      {% endif %}
-                    >
-                      {{- 'icon-delete.svg' | inline_asset_content -}}
-                      <span class="visually-hidden">{{ 'accessibility.remove' | t }}</span>
-                    </button>
+                    {% if is_drawer %}
+                      <a
+                        href="#"
+                        class="cart-items__remove-link"
+                        onclick="event.preventDefault(); document.querySelector('[on\\:click=\"/onLineItemRemove/{{ item.index | plus: 1 }}\"]')?.click(); return false;"
+                      >
+                        Remove
+                      </a>
+                    {% else %}
+                      <button
+                        class="button button--tertiary cart-items__remove"
+                        type="button"
+                        aria-label="{{ 'accessibility.remove_item' | t: title: item.title | escape }}"
+                        on:click="/onLineItemRemove/{{ item.index | plus: 1 }}"
+                        {% assign can_remove = item.instructions.can_remove | default: true, allow_false: true %}
+                        {% if can_remove == false %}
+                          hidden
+                        {% endif %}
+                      >
+                        {{- 'icon-delete.svg' | inline_asset_content -}}
+                        <span class="visually-hidden">{{ 'accessibility.remove' | t }}</span>
+                      </button>
+                    {% endif %}
                   </div>
                 </td>
                 <td
@@ -319,27 +374,29 @@
                     ></small>
                   </div>
                 </td>
-                <td
-                  class="cart-items__price cart-secondary-typography"
-                  role="cell"
-                  headers="productTotal"
-                >
-                  {%- liquid
-                    if settings.currency_code_enabled_cart_items
-                      assign price = item.final_line_price | money_with_currency
-                      assign unit_price = item.unit_price | money_with_currency
-                    else
-                      assign price = item.final_line_price | money
-                      assign unit_price = item.unit_price | money
-                    endif
-                  -%}
-                  <text-component value="{{ price | strip_html }}">{{ price }}</text-component>
-                  {%- if item.unit_price_measurement -%}
-                    <div class="cart-items__price-unit cart-secondary-typography">
-                      {% render 'unit-price', price: unit_price, measurement: item.unit_price_measurement %}
-                    </div>
-                  {%- endif -%}
-                </td>
+                {% unless is_drawer %}
+                  <td
+                    class="cart-items__price cart-secondary-typography"
+                    role="cell"
+                    headers="productTotal"
+                  >
+                    {%- liquid
+                      if settings.currency_code_enabled_cart_items
+                        assign price = item.final_line_price | money_with_currency
+                        assign unit_price = item.unit_price | money_with_currency
+                      else
+                        assign price = item.final_line_price | money
+                        assign unit_price = item.unit_price | money
+                      endif
+                    -%}
+                    <text-component value="{{ price | strip_html }}">{{ price }}</text-component>
+                    {%- if item.unit_price_measurement -%}
+                      <div class="cart-items__price-unit cart-secondary-typography">
+                        {% render 'unit-price', price: unit_price, measurement: item.unit_price_measurement %}
+                      </div>
+                    {%- endif -%}
+                  </td>
+                {% endunless %}
               </tr>
             {% endfor %}
           </tbody>
@@ -385,6 +442,13 @@
     align-items: start;
     padding-bottom: var(--cart-items-gap);
     margin-bottom: var(--margin-lg);
+  }
+
+  .cart-items--drawer .cart-items__table-row {
+    grid-template-columns: clamp(2.5rem, 15cqi, 7.5rem) minmax(0, 1fr) auto;
+    grid-template-areas:
+      'media details quantity'
+      'media error error';
   }
 
   .cart-items__table-row.cart-items__nested-line td:first-child {
@@ -481,6 +545,30 @@
     justify-content: flex-start;
     gap: var(--gap-xs);
     width: fit-content;
+  }
+
+  .cart-items__quantity-controls--drawer {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: var(--gap-sm);
+  }
+
+  .cart-items__price--drawer {
+    text-align: right;
+    font-size: var(--cart-font-size--md);
+    font-weight: 600;
+    color: var(--color-foreground);
+  }
+
+  .cart-items__remove-link {
+    font-size: var(--cart-font-size--xs);
+    color: var(--color-foreground);
+    text-decoration: underline;
+    cursor: pointer;
+  }
+
+  .cart-items__remove-link:hover {
+    color: rgb(var(--color-foreground-rgb) / var(--opacity-subdued-text));
   }
 
   .cart-items__quantity-controls > .volume-pricing-info {
