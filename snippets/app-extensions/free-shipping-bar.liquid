@@ -1,0 +1,170 @@
+{% comment %}
+  Free Shipping Bar - Shows progress toward free shipping threshold
+  Displays dynamically based on cart value
+  Compatible with Horizon theme
+{% endcomment %}
+
+{% assign shipping_threshold = shop.metafields.shipping.free_threshold | default: 50 %}
+{% assign shipping_message = shop.metafields.shipping.message | default: 'Add {amount} more for free shipping!' %}
+{% assign shipping_success_message = shop.metafields.shipping.success_message | default: 'You qualify for free shipping!' %}
+
+<div id="free-shipping-bar" class="free-shipping-bar" style="display: none;">
+  <div class="free-shipping-bar__container">
+    <div class="free-shipping-bar__content">
+      <span class="free-shipping-bar__message" id="shipping-message"></span>
+      <div class="free-shipping-bar__progress">
+        <div class="free-shipping-bar__progress-fill" id="shipping-progress-fill"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .free-shipping-bar {
+    background: rgb(var(--color-background));
+    border-bottom: 1px solid rgb(var(--color-border));
+    padding: 12px 0;
+    position: relative;
+    z-index: 1;
+  }
+
+  .free-shipping-bar__container {
+    max-width: var(--page-width);
+    margin: 0 auto;
+    padding: 0 var(--page-width-margin);
+  }
+
+  .free-shipping-bar__content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .free-shipping-bar__message {
+    font-size: 14px;
+    font-weight: 500;
+    color: rgb(var(--color-foreground));
+    text-align: center;
+  }
+
+  .free-shipping-bar__progress {
+    width: 100%;
+    max-width: 400px;
+    height: 6px;
+    background: rgb(var(--color-border));
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .free-shipping-bar__progress-fill {
+    height: 100%;
+    background: rgb(var(--color-button));
+    border-radius: 3px;
+    transition: width 0.3s ease;
+    width: 0%;
+  }
+
+  .free-shipping-bar--qualified .free-shipping-bar__progress-fill {
+    background: rgb(var(--color-success));
+  }
+
+  .free-shipping-bar--qualified .free-shipping-bar__message {
+    color: rgb(var(--color-success));
+  }
+</style>
+
+<script>
+(function() {
+  'use strict';
+
+  const threshold = {{ shipping_threshold }};
+  const messageTemplate = {{ shipping_message | json }};
+  const successMessage = {{ shipping_success_message | json }};
+  
+  const bar = document.getElementById('free-shipping-bar');
+  const messageEl = document.getElementById('shipping-message');
+  const progressFill = document.getElementById('shipping-progress-fill');
+
+  async function getCart() {
+    try {
+      const response = await fetch('/cart.js');
+      return await response.json();
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function formatMoney(cents) {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0
+    }).format(cents / 100);
+  }
+
+  function updateShippingBar() {
+    getCart().then(cart => {
+      if (!cart) return;
+
+      // Calculate cart total excluding gifts
+      const cartTotal = cart.items
+        .filter(item => !item.properties || (!item.properties._gift && !item.properties._gift_rule_id))
+        .reduce((sum, item) => sum + (item.line_price / 100), 0);
+
+      const remaining = Math.max(0, threshold - cartTotal);
+      const percentage = Math.min(100, (cartTotal / threshold) * 100);
+
+      if (cartTotal >= threshold) {
+        // Qualified for free shipping
+        bar.classList.add('free-shipping-bar--qualified');
+        messageEl.textContent = successMessage;
+        progressFill.style.width = '100%';
+        bar.style.display = 'block';
+      } else if (cartTotal > 0) {
+        // Show progress
+        bar.classList.remove('free-shipping-bar--qualified');
+        const formattedAmount = formatMoney(remaining * 100);
+        messageEl.textContent = messageTemplate.replace('{amount}', formattedAmount);
+        progressFill.style.width = `${percentage}%`;
+        bar.style.display = 'block';
+      } else {
+        // Hide if cart is empty
+        bar.style.display = 'none';
+      }
+    });
+  }
+
+  // Initialize
+  function init() {
+    updateShippingBar();
+
+    // Listen for Horizon's cart update events
+    document.addEventListener('cart:update', updateShippingBar);
+    
+    // Also listen for legacy events for compatibility
+    document.addEventListener('cart:updated', updateShippingBar);
+    document.addEventListener('cart:change', updateShippingBar);
+    document.addEventListener('cart:refresh', updateShippingBar);
+
+    // Intercept fetch to detect cart changes
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+      const response = await originalFetch.apply(this, args);
+      const url = args[0];
+      if (typeof url === 'string' && (url.includes('/cart/add') || url.includes('/cart/change') || url.includes('/cart/update'))) {
+        setTimeout(updateShippingBar, 200);
+      }
+      return response;
+    };
+  }
+
+  // Start when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>

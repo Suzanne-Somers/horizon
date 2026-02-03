@@ -1,0 +1,338 @@
+{% comment %}
+  Cart Gift - Automatically adds free gifts to cart based on rules
+  This app embed runs on all pages and monitors the cart
+  Rules are stored in shop.metafields.cart-gift.rules
+  Compatible with Horizon theme
+{% endcomment %}
+
+{% assign rules_json = shop.metafields.cart-gift.rules | default: '{"rules":[]}' %}
+{% assign samples_json = shop.metafields.free-samples.rules | default: '{"rules":[]}' %}
+
+<script id="cart-gift-rules" type="application/json">
+  {{ rules_json }}
+</script>
+
+<script id="free-sample-rules" type="application/json">
+  {{ samples_json }}
+</script>
+
+<script>
+(function() {
+  'use strict';
+
+  const GIFT_PROPERTY_KEY = '_gift_rule_id';
+  const SAMPLE_PROPERTY_KEY = '_sample_rule_id';
+  let rules = [];
+  let sampleRules = [];
+  let isProcessing = false;
+  let lastCartToken = null;
+
+  // Load rules from embedded JSON
+  function loadRules() {
+    try {
+      const rulesEl = document.getElementById('cart-gift-rules');
+      if (rulesEl) {
+        const data = JSON.parse(rulesEl.textContent);
+        rules = data.rules || [];
+      }
+      
+      const samplesEl = document.getElementById('free-sample-rules');
+      if (samplesEl) {
+        const data = JSON.parse(samplesEl.textContent);
+        sampleRules = data.rules || [];
+      }
+    } catch (error) {
+      console.log('Cart Gift: Could not parse rules');
+    }
+  }
+
+  // Get current cart
+  async function getCart() {
+    try {
+      const response = await fetch('/cart.js');
+      return await response.json();
+    } catch (error) {
+      return null;
+    }
+  }
+
+  // Add item to cart
+  async function addToCart(variantId, quantity, properties) {
+    try {
+      const response = await fetch('/cart/add.js', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: parseInt(variantId),
+          quantity: quantity,
+          properties: properties
+        })
+      });
+      return response.ok;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Remove item from cart
+  async function removeFromCart(lineKey) {
+    try {
+      const response = await fetch('/cart/change.js', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: lineKey,
+          quantity: 0
+        })
+      });
+      return response.ok;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Find gift in cart for a specific rule
+  function findGiftInCart(cart, ruleId) {
+    return cart.items.find(item => 
+      item.properties && item.properties[GIFT_PROPERTY_KEY] === ruleId
+    );
+  }
+
+  // Find sample in cart for a specific rule
+  function findSampleInCart(cart, ruleId) {
+    return cart.items.find(item => 
+      item.properties && item.properties[SAMPLE_PROPERTY_KEY] === ruleId
+    );
+  }
+
+  // Extract numeric variant ID from GID or string
+  function extractVariantId(gid) {
+    if (!gid) return null;
+    const match = String(gid).match(/ProductVariant\/(\d+)/);
+    return match ? match[1] : String(gid).replace(/\D/g, '');
+  }
+
+  // Trigger Horizon theme cart refresh
+  function triggerCartRefresh() {
+    // Trigger Horizon's cart:update event
+    document.dispatchEvent(new CustomEvent('cart:update', { bubbles: true }));
+    
+    // Also trigger legacy events for compatibility
+    document.dispatchEvent(new CustomEvent('cart:refresh'));
+    document.dispatchEvent(new CustomEvent('cart:updated'));
+    document.dispatchEvent(new CustomEvent('cart:change'));
+  }
+
+  // Process cart and apply rules
+  async function processCart() {
+    if (isProcessing || (rules.length === 0 && sampleRules.length === 0)) return;
+    isProcessing = true;
+
+    try {
+      const cart = await getCart();
+      if (!cart) {
+        isProcessing = false;
+        return;
+      }
+
+      // Skip if cart hasn't changed
+      if (cart.token === lastCartToken) {
+        isProcessing = false;
+        return;
+      }
+      lastCartToken = cart.token;
+
+      // Calculate cart total (excluding gift items)
+      const cartTotal = cart.items
+        .filter(item => !item.properties || !item.properties[GIFT_PROPERTY_KEY])
+        .reduce((sum, item) => sum + (item.line_price / 100), 0);
+
+      for (const rule of rules) {
+        if (!rule.enabled) continue;
+
+        let conditionsMet = false;
+        const variantId = extractVariantId(rule.giftVariantId);
+
+        // Check conditions
+        switch (rule.type) {
+          case 'cart_value':
+            const minValue = rule.conditions?.minCartValue || 0;
+            const maxValue = rule.conditions?.maxCartValue || Infinity;
+            conditionsMet = cartTotal >= minValue && cartTotal <= maxValue;
+            break;
+
+          case 'product_in_cart':
+          case 'bogo':
+            const triggerId = rule.conditions?.triggerProductId;
+            const triggerVarId = rule.conditions?.triggerVariantId;
+            const minQty = rule.conditions?.minQuantity || 1;
+            
+            // Try variant-level match first (more specific)
+            if (triggerVarId) {
+              const triggerVariantId = String(triggerVarId).match(/ProductVariant\/(\d+)/)?.[1] || String(triggerVarId).replace(/\D/g, '');
+              if (triggerVariantId) {
+                const triggerItem = cart.items.find(item => 
+                  String(item.variant_id) === triggerVariantId
+                );
+                conditionsMet = triggerItem && triggerItem.quantity >= minQty;
+              }
+            }
+            // Fall back to product-level match
+            else if (triggerId) {
+              const triggerProductId = String(triggerId).match(/Product\/(\d+)/)?.[1] || String(triggerId).replace(/\D/g, '');
+              if (triggerProductId) {
+                // Sum quantities across all variants of this product
+                const totalQty = cart.items
+                  .filter(item => String(item.product_id) === triggerProductId)
+                  .reduce((sum, item) => sum + item.quantity, 0);
+                conditionsMet = totalQty >= minQty;
+              }
+            }
+            break;
+        }
+
+        const existingGift = findGiftInCart(cart, rule.id);
+
+        if (conditionsMet && !existingGift && variantId) {
+          // Add gift
+          await addToCart(variantId, rule.giftQuantity || 1, {
+            [GIFT_PROPERTY_KEY]: rule.id,
+            '_gift': 'true',
+            '_gift_name': rule.name || 'Free Gift'
+          });
+          // Reset token to trigger recheck
+          lastCartToken = null;
+          triggerCartRefresh();
+        } else if (!conditionsMet && existingGift) {
+          // Remove gift
+          await removeFromCart(existingGift.key);
+          lastCartToken = null;
+          triggerCartRefresh();
+        }
+      }
+
+      // Process sample rules
+      for (const rule of sampleRules) {
+        if (!rule.enabled) continue;
+
+        let conditionsMet = false;
+        const variantId = extractVariantId(rule.giftVariantId);
+
+        // Check conditions (same logic as gifts)
+        switch (rule.type) {
+          case 'cart_value':
+            const minValue = rule.conditions?.minCartValue || 0;
+            const maxValue = rule.conditions?.maxCartValue || Infinity;
+            conditionsMet = cartTotal >= minValue && cartTotal <= maxValue;
+            break;
+
+          case 'product_in_cart':
+          case 'bogo':
+            const triggerId = rule.conditions?.triggerProductId;
+            const triggerVarId = rule.conditions?.triggerVariantId;
+            const minQty = rule.conditions?.minQuantity || 1;
+            
+            // Try variant-level match first (more specific)
+            if (triggerVarId) {
+              const triggerVariantId = String(triggerVarId).match(/ProductVariant\/(\d+)/)?.[1] || String(triggerVarId).replace(/\D/g, '');
+              if (triggerVariantId) {
+                const triggerItem = cart.items.find(item => 
+                  String(item.variant_id) === triggerVariantId
+                );
+                conditionsMet = triggerItem && triggerItem.quantity >= minQty;
+              }
+            }
+            // Fall back to product-level match
+            else if (triggerId) {
+              const triggerProductId = String(triggerId).match(/Product\/(\d+)/)?.[1] || String(triggerId).replace(/\D/g, '');
+              if (triggerProductId) {
+                // Sum quantities across all variants of this product
+                const totalQty = cart.items
+                  .filter(item => String(item.product_id) === triggerProductId)
+                  .reduce((sum, item) => sum + item.quantity, 0);
+                conditionsMet = totalQty >= minQty;
+              }
+            }
+            break;
+        }
+
+        const existingSample = findSampleInCart(cart, rule.id);
+
+        if (conditionsMet && !existingSample && variantId) {
+          // Add sample
+          await addToCart(variantId, rule.giftQuantity || 1, {
+            [SAMPLE_PROPERTY_KEY]: rule.id,
+            '_sample': 'true',
+            '_gift_name': rule.name || 'Free Sample'
+          });
+          // Reset token to trigger recheck
+          lastCartToken = null;
+          triggerCartRefresh();
+        } else if (!conditionsMet && existingSample) {
+          // Remove sample
+          await removeFromCart(existingSample.key);
+          lastCartToken = null;
+          triggerCartRefresh();
+        }
+      }
+    } catch (error) {
+      console.log('Cart Gift: Error processing cart', error);
+    }
+
+    isProcessing = false;
+  }
+
+  // Debounce helper
+  function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+  }
+
+  // Initialize
+  function init() {
+    loadRules();
+    
+    if (rules.length === 0 && sampleRules.length === 0) {
+      return; // No rules configured
+    }
+
+    // Initial check
+    processCart();
+
+    // Debounced cart processor
+    const debouncedProcess = debounce(() => {
+      lastCartToken = null;
+      processCart();
+    }, 500);
+
+    // Listen for Horizon's cart update events
+    document.addEventListener('cart:update', debouncedProcess);
+    
+    // Also listen for legacy events for compatibility
+    document.addEventListener('cart:updated', debouncedProcess);
+    document.addEventListener('cart:change', debouncedProcess);
+    document.addEventListener('cart:refresh', debouncedProcess);
+    
+    // Intercept fetch to detect cart changes
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+      const response = await originalFetch.apply(this, args);
+      const url = args[0];
+      if (typeof url === 'string' && (url.includes('/cart/add') || url.includes('/cart/change') || url.includes('/cart/update'))) {
+        setTimeout(debouncedProcess, 100);
+      }
+      return response;
+    };
+  }
+
+  // Start when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>

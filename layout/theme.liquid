@@ -44,6 +44,12 @@
       {% sections 'header-group' %}
     </div>
 
+    {% comment %} Suzanne Somers App Extensions {% endcomment %}
+    {% render 'app-extensions/free-shipping-bar' %}
+    {% render 'app-extensions/cart-gift' %}
+    {% render 'app-extensions/bogo' %}
+    {% render 'app-extensions/order-limits' %}
+
     <script>
       // Inline header height calculation to prevent layout shift
       // Note: Updates in calculateHeaderGroupHeight() and updateTransparentHeaderOffset()utilities.js should be kept in sync with this function

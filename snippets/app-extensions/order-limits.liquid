@@ -1,0 +1,286 @@
+{% comment %}
+  Order Limits - Prevents customers from adding more than allowed quantity to cart
+  This app embed runs on all pages and monitors cart additions
+  Rules are stored in shop.metafields.order-limit.rules
+  Compatible with Horizon theme
+{% endcomment %}
+
+{% assign rules_json = shop.metafields.order-limit.rules | default: '{"rules":[]}' %}
+
+<script id="order-limit-rules" type="application/json">
+  {{ rules_json }}
+</script>
+
+<script>
+(function() {
+  'use strict';
+
+  let rules = [];
+  let isProcessing = false;
+
+  // Load rules from embedded JSON
+  function loadRules() {
+    try {
+      const rulesEl = document.getElementById('order-limit-rules');
+      if (rulesEl) {
+        const data = JSON.parse(rulesEl.textContent);
+        rules = data.rules || [];
+        console.log('Order Limits: Loaded', rules.length, 'rules');
+      }
+    } catch (error) {
+      console.log('Order Limits: Could not parse rules', error);
+    }
+  }
+
+  // Get current cart
+  async function getCart() {
+    try {
+      const response = await fetch('/cart.js');
+      return await response.json();
+    } catch (error) {
+      return null;
+    }
+  }
+
+  // Extract numeric product ID from GID or string
+  function extractProductId(gid) {
+    if (!gid) return null;
+    const match = String(gid).match(/Product\/(\d+)/);
+    return match ? match[1] : String(gid).replace(/\D/g, '');
+  }
+
+  // Check if product has limits
+  function getProductLimit(productId) {
+    for (const rule of rules) {
+      if (!rule.enabled || rule.type !== 'product' || !rule.products) continue;
+      
+      for (const product of rule.products) {
+        const ruleProductId = extractProductId(product.id);
+        if (ruleProductId === String(productId)) {
+          return { limit: rule.maxQuantity, message: rule.message, rule };
+        }
+      }
+    }
+    return null;
+  }
+
+  // Show error message (Horizon-compatible styling)
+  function showErrorMessage(message) {
+    let errorContainer = document.querySelector('.order-limit-error');
+    if (!errorContainer) {
+      errorContainer = document.createElement('div');
+      errorContainer.className = 'order-limit-error';
+      errorContainer.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: rgb(var(--color-error));
+        color: rgb(var(--color-error-text));
+        padding: 12px 16px;
+        border-radius: 4px;
+        z-index: 10000;
+        font-family: var(--font-body-family);
+        font-size: 14px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        max-width: 300px;
+      `;
+      document.body.appendChild(errorContainer);
+    }
+    
+    errorContainer.textContent = message;
+    errorContainer.style.display = 'block';
+    
+    setTimeout(() => {
+      if (errorContainer) {
+        errorContainer.style.display = 'none';
+      }
+    }, 5000);
+  }
+
+  // Check cart limits
+  async function checkCartLimits() {
+    if (isProcessing || rules.length === 0) return;
+    
+    const cart = await getCart();
+    if (!cart) return;
+
+    const productQuantities = {};
+    
+    for (const item of cart.items) {
+      // Skip gift items
+      if (item.properties && (item.properties._gift || item.properties._gift_rule_id)) {
+        continue;
+      }
+      
+      const productId = String(item.product_id);
+      productQuantities[productId] = (productQuantities[productId] || 0) + item.quantity;
+    }
+
+    // Check product-specific limits
+    for (const [productId, quantity] of Object.entries(productQuantities)) {
+      const limitInfo = getProductLimit(productId);
+      if (limitInfo && quantity > limitInfo.limit) {
+        showErrorMessage(limitInfo.message || `Maximum ${limitInfo.limit} items allowed for this product`);
+        return;
+      }
+    }
+  }
+
+  // Get product ID from variant ID using Shopify API
+  async function getProductIdFromVariant(variantId) {
+    try {
+      const response = await fetch(`/products.json?limit=250`);
+      const data = await response.json();
+      
+      for (const product of data.products) {
+        const variant = product.variants.find(v => String(v.id) === String(variantId));
+        if (variant) {
+          return String(product.id);
+        }
+      }
+      return null;
+    } catch (error) {
+      console.log('Order Limits: Error getting product ID', error);
+      return null;
+    }
+  }
+
+  // Intercept cart additions
+  function interceptCartAdditions() {
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+      const url = args[0];
+      const options = args[1] || {};
+      
+      if (typeof url === 'string' && url.includes('/cart/add')) {
+        try {
+          let body = options.body;
+          if (body) {
+            let addData;
+            if (typeof body === 'string') {
+              if (body.startsWith('{')) {
+                addData = JSON.parse(body);
+              } else {
+                const params = new URLSearchParams(body);
+                addData = {
+                  id: params.get('id'),
+                  quantity: parseInt(params.get('quantity')) || 1
+                };
+              }
+            } else if (body instanceof FormData) {
+              addData = {
+                id: body.get('id'),
+                quantity: parseInt(body.get('quantity')) || 1
+              };
+            }
+
+            if (addData && addData.id) {
+              const cart = await getCart();
+              if (cart) {
+                let productId = null;
+                
+                const existingItem = cart.items.find(item => String(item.variant_id) === String(addData.id));
+                if (existingItem) {
+                  productId = String(existingItem.product_id);
+                } else {
+                  productId = await getProductIdFromVariant(addData.id);
+                }
+
+                if (productId) {
+                  const currentQuantity = cart.items
+                    .filter(item => 
+                      String(item.product_id) === productId && 
+                      (!item.properties || (!item.properties._gift && !item.properties._gift_rule_id && !item.properties._sample))
+                    )
+                    .reduce((sum, item) => sum + item.quantity, 0);
+
+                  const newQuantity = currentQuantity + addData.quantity;
+                  const limitInfo = getProductLimit(productId);
+
+                  if (limitInfo && newQuantity > limitInfo.limit) {
+                    showErrorMessage(limitInfo.message || `Maximum ${limitInfo.limit} items allowed for this product`);
+                    
+                    return new Response(JSON.stringify({ 
+                      status: 'error', 
+                      message: 'Limit exceeded',
+                      description: limitInfo.message 
+                    }), {
+                      status: 422,
+                      headers: { 'Content-Type': 'application/json' }
+                    });
+                  }
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.log('Order Limits: Error checking limits', error);
+        }
+      }
+
+      const response = await originalFetch.apply(this, args);
+      
+      if (typeof url === 'string' && (url.includes('/cart/add') || url.includes('/cart/change') || url.includes('/cart/update'))) {
+        setTimeout(checkCartLimits, 100);
+      }
+      
+      return response;
+    };
+
+    // Intercept form submissions
+    document.addEventListener('submit', function(e) {
+      const form = e.target;
+      if (form && form.action && form.action.includes('/cart/add')) {
+        setTimeout(checkCartLimits, 500);
+      }
+    });
+
+    // Intercept quantity changes
+    document.addEventListener('change', function(e) {
+      if (e.target && e.target.name && e.target.name.includes('quantity')) {
+        setTimeout(checkCartLimits, 100);
+      }
+    });
+  }
+
+  // Debounce helper
+  function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+  }
+
+  // Initialize
+  function init() {
+    loadRules();
+    
+    if (rules.length === 0) {
+      return;
+    }
+
+    interceptCartAdditions();
+    checkCartLimits();
+
+    const debouncedCheck = debounce(checkCartLimits, 300);
+    
+    // Listen for Horizon's cart update events
+    document.addEventListener('cart:update', debouncedCheck);
+    
+    // Also listen for legacy events for compatibility
+    document.addEventListener('cart:updated', debouncedCheck);
+    document.addEventListener('cart:change', debouncedCheck);
+    document.addEventListener('cart:refresh', debouncedCheck);
+  }
+
+  // Start when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+  
+  setTimeout(init, 1000);
+})();
+</script>

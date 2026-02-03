@@ -1,0 +1,270 @@
+{% comment %}
+  BOGO Deals - Automatically marks items for BOGO discount
+  Works with the bogo-discount Shopify Function
+  Campaigns stored in shop.metafields.bogo.campaigns
+  Compatible with Horizon theme
+{% endcomment %}
+
+{% assign campaigns_json = shop.metafields.bogo.campaigns | default: '[]' %}
+
+<script id="bogo-campaigns" type="application/json">
+  {{ campaigns_json }}
+</script>
+
+<script>
+(function() {
+  'use strict';
+
+  const BOGO_PROPERTY_KEY = '_bogo_free';
+  let campaigns = [];
+  let isProcessing = false;
+  let lastCartState = null;
+
+  // Load campaigns from embedded JSON
+  function loadCampaigns() {
+    try {
+      const el = document.getElementById('bogo-campaigns');
+      if (el) {
+        campaigns = JSON.parse(el.textContent) || [];
+        // Only use enabled campaigns
+        campaigns = campaigns.filter(c => c.enabled);
+      }
+    } catch (error) {
+      console.log('BOGO: Could not parse campaigns');
+    }
+  }
+
+  // Get current cart
+  async function getCart() {
+    try {
+      const response = await fetch('/cart.js');
+      return await response.json();
+    } catch (error) {
+      return null;
+    }
+  }
+
+  // Update cart item properties
+  async function updateCartItem(lineKey, quantity, properties) {
+    try {
+      const response = await fetch('/cart/change.js', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: lineKey,
+          quantity: quantity,
+          properties: properties
+        })
+      });
+      return response.ok;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  // Extract numeric ID from Shopify GID
+  function extractId(gid) {
+    if (!gid) return null;
+    const match = String(gid).match(/\/(\d+)$/);
+    return match ? match[1] : String(gid).replace(/\D/g, '');
+  }
+
+  // Check if a product is eligible for a campaign
+  function isProductEligible(productId, variantId, campaign) {
+    if (!campaign.products || campaign.products.length === 0) return false;
+    
+    return campaign.products.some(p => {
+      const campaignProductId = extractId(p.id);
+      if (campaignProductId === String(productId)) return true;
+      
+      // Also check variant level
+      if (p.variants) {
+        return p.variants.some(v => extractId(v.id) === String(variantId));
+      }
+      return false;
+    });
+  }
+
+  // Trigger Horizon theme cart refresh
+  function triggerCartRefresh() {
+    document.dispatchEvent(new CustomEvent('cart:refresh'));
+    document.dispatchEvent(new CustomEvent('cart:updated'));
+    document.dispatchEvent(new CustomEvent('cart:change'));
+    
+    const cartDrawer = document.querySelector('cart-drawer-component');
+    if (cartDrawer && cartDrawer.updateCart) {
+      cartDrawer.updateCart();
+    }
+  }
+
+  // Process cart and apply BOGO logic
+  async function processCart() {
+    if (isProcessing || campaigns.length === 0) return;
+    isProcessing = true;
+
+    try {
+      const cart = await getCart();
+      if (!cart || !cart.items || cart.items.length === 0) {
+        isProcessing = false;
+        return;
+      }
+
+      // Create a state signature to avoid reprocessing
+      const stateSignature = JSON.stringify(cart.items.map(i => ({
+        id: i.id,
+        qty: i.quantity,
+        props: i.properties
+      })));
+      
+      if (stateSignature === lastCartState) {
+        isProcessing = false;
+        return;
+      }
+      lastCartState = stateSignature;
+
+      let cartModified = false;
+
+      for (const campaign of campaigns) {
+        const buyQty = campaign.buyQuantity || 1;
+        const getQty = campaign.getQuantity || 1;
+        const maxFree = campaign.maxFreeItems || 1;
+
+        // Find all eligible items in cart (not already marked as free)
+        const eligibleItems = cart.items.filter(item => 
+          isProductEligible(item.product_id, item.variant_id, campaign) &&
+          (!item.properties || item.properties[BOGO_PROPERTY_KEY] !== 'true')
+        );
+
+        // Find items already marked as BOGO free for this campaign
+        const freeItems = cart.items.filter(item =>
+          isProductEligible(item.product_id, item.variant_id, campaign) &&
+          item.properties && item.properties[BOGO_PROPERTY_KEY] === 'true'
+        );
+
+        // Calculate total eligible quantity (excluding already-free items)
+        const totalEligibleQty = eligibleItems.reduce((sum, item) => sum + item.quantity, 0);
+        const currentFreeQty = freeItems.reduce((sum, item) => sum + item.quantity, 0);
+
+        // Calculate how many free items they should get
+        let earnedFreeQty = Math.floor(totalEligibleQty / buyQty) * getQty;
+        earnedFreeQty = Math.min(earnedFreeQty, maxFree);
+
+        // If they have more free items than earned, we need to un-mark some
+        if (currentFreeQty > earnedFreeQty) {
+          let excessToRemove = currentFreeQty - earnedFreeQty;
+          for (const item of freeItems) {
+            if (excessToRemove <= 0) break;
+            const removeQty = Math.min(item.quantity, excessToRemove);
+            const newProps = { ...item.properties };
+            delete newProps[BOGO_PROPERTY_KEY];
+            delete newProps['_bogo_campaign'];
+            await updateCartItem(item.key, item.quantity, newProps);
+            excessToRemove -= removeQty;
+            cartModified = true;
+          }
+        }
+        
+        // If they've earned more free items than currently marked, mark some
+        else if (earnedFreeQty > currentFreeQty) {
+          let needToMark = earnedFreeQty - currentFreeQty;
+          
+          // Sort eligible items by price (mark cheapest as free)
+          const sortedEligible = [...eligibleItems].sort((a, b) => 
+            (a.final_line_price / a.quantity) - (b.final_line_price / b.quantity)
+          );
+
+          for (const item of sortedEligible) {
+            if (needToMark <= 0) break;
+            const markQty = Math.min(item.quantity, needToMark);
+            
+            if (markQty === item.quantity) {
+              await updateCartItem(item.key, item.quantity, {
+                ...item.properties,
+                [BOGO_PROPERTY_KEY]: 'true',
+                '_bogo_campaign': campaign.id,
+                '_bogo_discount': campaign.discountType === 'free' ? '100' : campaign.discountValue
+              });
+              needToMark -= markQty;
+              cartModified = true;
+            }
+          }
+        }
+      }
+
+      if (cartModified) {
+        lastCartState = null;
+        triggerCartRefresh();
+      }
+
+    } catch (error) {
+      console.log('BOGO: Error processing cart', error);
+    }
+
+    isProcessing = false;
+  }
+
+  // Debounce helper
+  function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+  }
+
+  // Initialize
+  function init() {
+    loadCampaigns();
+    
+    if (campaigns.length === 0) {
+      return; // No active campaigns
+    }
+
+    // Initial check
+    setTimeout(processCart, 500);
+
+    // Debounced processor
+    const debouncedProcess = debounce(() => {
+      lastCartState = null;
+      processCart();
+    }, 800);
+
+    // Listen for cart events (Horizon compatible)
+    document.addEventListener('cart:updated', debouncedProcess);
+    document.addEventListener('cart:change', debouncedProcess);
+    document.addEventListener('cart:refresh', debouncedProcess);
+    
+    if (window.CartAddEvent) {
+      document.addEventListener(CartAddEvent.eventName, debouncedProcess);
+    }
+    
+    // Intercept fetch to detect cart changes
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+      const response = await originalFetch.apply(this, args);
+      const url = args[0];
+      if (typeof url === 'string' && 
+          (url.includes('/cart/add') || url.includes('/cart/update')) &&
+          !url.includes('/cart/change')) {
+        setTimeout(debouncedProcess, 200);
+      }
+      return response;
+    };
+  }
+
+  // Start when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+})();
+</script>
+
+{% schema %}
+{
+  "name": "BOGO Deals",
+  "target": "body",
+  "settings": []
+}
+{% endschema %}
