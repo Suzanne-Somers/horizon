@@ -1,0 +1,846 @@
+{% comment %}
+  Suzanne Somers App - Combined App Embed
+  Includes: Cart Gifts, BOGO Deals, Order Limits, and Free Shipping Bar
+  Compatible with Horizon theme
+{% endcomment %}
+
+{% comment %} Load all metafield data {% endcomment %}
+{% assign rules_json = shop.metafields.cart-gift.rules | default: '{"rules":[]}' %}
+{% assign samples_json = shop.metafields.free-samples.rules | default: '{"rules":[]}' %}
+{% assign campaigns_json = shop.metafields.bogo.campaigns | default: '[]' %}
+{% assign limit_rules_json = shop.metafields.order-limit.rules | default: '{"rules":[]}' %}
+{% assign shipping_threshold = shop.metafields.shipping.free_threshold | default: 50 %}
+{% assign shipping_message = shop.metafields.shipping.message | default: 'Add {amount} more for free shipping!' %}
+{% assign shipping_success_message = shop.metafields.shipping.success_message | default: 'You qualify for free shipping!' %}
+
+{% comment %} Free Shipping Bar HTML {% endcomment %}
+<div id="free-shipping-bar" class="free-shipping-bar" style="display: none;">
+  <div class="free-shipping-bar__container">
+    <div class="free-shipping-bar__content">
+      <span class="free-shipping-bar__message" id="shipping-message"></span>
+      <div class="free-shipping-bar__progress">
+        <div class="free-shipping-bar__progress-fill" id="shipping-progress-fill"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+{% comment %} Free Shipping Bar Styles {% endcomment %}
+<style>
+  .free-shipping-bar {
+    background: rgb(var(--color-background));
+    border-bottom: 1px solid rgb(var(--color-border));
+    padding: 12px 0;
+    position: relative;
+    z-index: 1;
+  }
+
+  .free-shipping-bar__container {
+    max-width: var(--page-width);
+    margin: 0 auto;
+    padding: 0 var(--page-width-margin);
+  }
+
+  .free-shipping-bar__content {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .free-shipping-bar__message {
+    font-size: 14px;
+    font-weight: 500;
+    color: rgb(var(--color-foreground));
+    text-align: center;
+  }
+
+  .free-shipping-bar__progress {
+    width: 100%;
+    max-width: 400px;
+    height: 6px;
+    background: rgb(var(--color-border));
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .free-shipping-bar__progress-fill {
+    height: 100%;
+    background: rgb(var(--color-button));
+    border-radius: 3px;
+    transition: width 0.3s ease;
+    width: 0%;
+  }
+
+  .free-shipping-bar--qualified .free-shipping-bar__progress-fill {
+    background: rgb(var(--color-success));
+  }
+
+  .free-shipping-bar--qualified .free-shipping-bar__message {
+    color: rgb(var(--color-success));
+  }
+
+  .order-limit-error {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: rgb(var(--color-error));
+    color: rgb(var(--color-error-text));
+    padding: 12px 16px;
+    border-radius: 4px;
+    z-index: 10000;
+    font-family: var(--font-body-family);
+    font-size: 14px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    max-width: 300px;
+  }
+</style>
+
+{% comment %} JSON data for JavaScript {% endcomment %}
+<script id="cart-gift-rules" type="application/json">
+  {{ rules_json }}
+</script>
+
+<script id="free-sample-rules" type="application/json">
+  {{ samples_json }}
+</script>
+
+<script id="bogo-campaigns" type="application/json">
+  {{ campaigns_json }}
+</script>
+
+<script id="order-limit-rules" type="application/json">
+  {{ limit_rules_json }}
+</script>
+
+{% comment %} Combined JavaScript for all functionality {% endcomment %}
+<script>
+(function() {
+  'use strict';
+
+  // ============================================
+  // SHARED UTILITIES
+  // ============================================
+  
+  async function getCart() {
+    try {
+      const response = await fetch('/cart.js');
+      return await response.json();
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function triggerCartRefresh() {
+    document.dispatchEvent(new CustomEvent('cart:update', { bubbles: true }));
+    document.dispatchEvent(new CustomEvent('cart:refresh'));
+    document.dispatchEvent(new CustomEvent('cart:updated'));
+    document.dispatchEvent(new CustomEvent('cart:change'));
+  }
+
+  function debounce(func, wait) {
+    let timeout;
+    return function(...args) {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => func.apply(this, args), wait);
+    };
+  }
+
+  function extractId(gid) {
+    if (!gid) return null;
+    const match = String(gid).match(/\/(\d+)$/);
+    return match ? match[1] : String(gid).replace(/\D/g, '');
+  }
+
+  function extractVariantId(gid) {
+    if (!gid) return null;
+    const match = String(gid).match(/ProductVariant\/(\d+)/);
+    return match ? match[1] : String(gid).replace(/\D/g, '');
+  }
+
+  function extractProductId(gid) {
+    if (!gid) return null;
+    const match = String(gid).match(/Product\/(\d+)/);
+    return match ? match[1] : String(gid).replace(/\D/g, '');
+  }
+
+  // ============================================
+  // CART GIFT FUNCTIONALITY
+  // ============================================
+  
+  const GIFT_PROPERTY_KEY = '_gift_rule_id';
+  const SAMPLE_PROPERTY_KEY = '_sample_rule_id';
+  let giftRules = [];
+  let sampleRules = [];
+  let isProcessingGifts = false;
+  let lastCartToken = null;
+
+  function loadGiftRules() {
+    try {
+      const rulesEl = document.getElementById('cart-gift-rules');
+      if (rulesEl) {
+        const data = JSON.parse(rulesEl.textContent);
+        giftRules = data.rules || [];
+      }
+      
+      const samplesEl = document.getElementById('free-sample-rules');
+      if (samplesEl) {
+        const data = JSON.parse(samplesEl.textContent);
+        sampleRules = data.rules || [];
+      }
+    } catch (error) {
+      console.log('Cart Gift: Could not parse rules');
+    }
+  }
+
+  async function addToCart(variantId, quantity, properties) {
+    try {
+      const response = await fetch('/cart/add.js', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: parseInt(variantId),
+          quantity: quantity,
+          properties: properties
+        })
+      });
+      return response.ok;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  async function removeFromCart(lineKey) {
+    try {
+      const response = await fetch('/cart/change.js', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: lineKey,
+          quantity: 0
+        })
+      });
+      return response.ok;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function findGiftInCart(cart, ruleId) {
+    return cart.items.find(item => 
+      item.properties && item.properties[GIFT_PROPERTY_KEY] === ruleId
+    );
+  }
+
+  function findSampleInCart(cart, ruleId) {
+    return cart.items.find(item => 
+      item.properties && item.properties[SAMPLE_PROPERTY_KEY] === ruleId
+    );
+  }
+
+  async function processGifts() {
+    if (isProcessingGifts || (giftRules.length === 0 && sampleRules.length === 0)) return;
+    isProcessingGifts = true;
+
+    try {
+      const cart = await getCart();
+      if (!cart) {
+        isProcessingGifts = false;
+        return;
+      }
+
+      if (cart.token === lastCartToken) {
+        isProcessingGifts = false;
+        return;
+      }
+      lastCartToken = cart.token;
+
+      const cartTotal = cart.items
+        .filter(item => !item.properties || !item.properties[GIFT_PROPERTY_KEY])
+        .reduce((sum, item) => sum + (item.line_price / 100), 0);
+
+      // Process gift rules
+      for (const rule of giftRules) {
+        if (!rule.enabled) continue;
+
+        let conditionsMet = false;
+        const variantId = extractVariantId(rule.giftVariantId);
+
+        switch (rule.type) {
+          case 'cart_value':
+            const minValue = rule.conditions?.minCartValue || 0;
+            const maxValue = rule.conditions?.maxCartValue || Infinity;
+            conditionsMet = cartTotal >= minValue && cartTotal <= maxValue;
+            break;
+
+          case 'product_in_cart':
+          case 'bogo':
+            const triggerId = rule.conditions?.triggerProductId;
+            const triggerVarId = rule.conditions?.triggerVariantId;
+            const minQty = rule.conditions?.minQuantity || 1;
+            
+            if (triggerVarId) {
+              const triggerVariantId = String(triggerVarId).match(/ProductVariant\/(\d+)/)?.[1] || String(triggerVarId).replace(/\D/g, '');
+              if (triggerVariantId) {
+                const triggerItem = cart.items.find(item => 
+                  String(item.variant_id) === triggerVariantId
+                );
+                conditionsMet = triggerItem && triggerItem.quantity >= minQty;
+              }
+            } else if (triggerId) {
+              const triggerProductId = String(triggerId).match(/Product\/(\d+)/)?.[1] || String(triggerId).replace(/\D/g, '');
+              if (triggerProductId) {
+                const totalQty = cart.items
+                  .filter(item => String(item.product_id) === triggerProductId)
+                  .reduce((sum, item) => sum + item.quantity, 0);
+                conditionsMet = totalQty >= minQty;
+              }
+            }
+            break;
+        }
+
+        const existingGift = findGiftInCart(cart, rule.id);
+
+        if (conditionsMet && !existingGift && variantId) {
+          await addToCart(variantId, rule.giftQuantity || 1, {
+            [GIFT_PROPERTY_KEY]: rule.id,
+            '_gift': 'true',
+            '_gift_name': rule.name || 'Free Gift'
+          });
+          lastCartToken = null;
+          triggerCartRefresh();
+        } else if (!conditionsMet && existingGift) {
+          await removeFromCart(existingGift.key);
+          lastCartToken = null;
+          triggerCartRefresh();
+        }
+      }
+
+      // Process sample rules
+      for (const rule of sampleRules) {
+        if (!rule.enabled) continue;
+
+        let conditionsMet = false;
+        const variantId = extractVariantId(rule.giftVariantId);
+
+        switch (rule.type) {
+          case 'cart_value':
+            const minValue = rule.conditions?.minCartValue || 0;
+            const maxValue = rule.conditions?.maxCartValue || Infinity;
+            conditionsMet = cartTotal >= minValue && cartTotal <= maxValue;
+            break;
+
+          case 'product_in_cart':
+          case 'bogo':
+            const triggerId = rule.conditions?.triggerProductId;
+            const triggerVarId = rule.conditions?.triggerVariantId;
+            const minQty = rule.conditions?.minQuantity || 1;
+            
+            if (triggerVarId) {
+              const triggerVariantId = String(triggerVarId).match(/ProductVariant\/(\d+)/)?.[1] || String(triggerVarId).replace(/\D/g, '');
+              if (triggerVariantId) {
+                const triggerItem = cart.items.find(item => 
+                  String(item.variant_id) === triggerVariantId
+                );
+                conditionsMet = triggerItem && triggerItem.quantity >= minQty;
+              }
+            } else if (triggerId) {
+              const triggerProductId = String(triggerId).match(/Product\/(\d+)/)?.[1] || String(triggerId).replace(/\D/g, '');
+              if (triggerProductId) {
+                const totalQty = cart.items
+                  .filter(item => String(item.product_id) === triggerProductId)
+                  .reduce((sum, item) => sum + item.quantity, 0);
+                conditionsMet = totalQty >= minQty;
+              }
+            }
+            break;
+        }
+
+        const existingSample = findSampleInCart(cart, rule.id);
+
+        if (conditionsMet && !existingSample && variantId) {
+          await addToCart(variantId, rule.giftQuantity || 1, {
+            [SAMPLE_PROPERTY_KEY]: rule.id,
+            '_sample': 'true',
+            '_gift_name': rule.name || 'Free Sample'
+          });
+          lastCartToken = null;
+          triggerCartRefresh();
+        } else if (!conditionsMet && existingSample) {
+          await removeFromCart(existingSample.key);
+          lastCartToken = null;
+          triggerCartRefresh();
+        }
+      }
+    } catch (error) {
+      console.log('Cart Gift: Error processing cart', error);
+    }
+
+    isProcessingGifts = false;
+  }
+
+  // ============================================
+  // BOGO FUNCTIONALITY
+  // ============================================
+  
+  const BOGO_PROPERTY_KEY = '_bogo_free';
+  let bogoCampaigns = [];
+  let isProcessingBogo = false;
+  let lastCartState = null;
+
+  function loadBogoCampaigns() {
+    try {
+      const el = document.getElementById('bogo-campaigns');
+      if (el) {
+        bogoCampaigns = JSON.parse(el.textContent) || [];
+        bogoCampaigns = bogoCampaigns.filter(c => c.enabled);
+      }
+    } catch (error) {
+      console.log('BOGO: Could not parse campaigns');
+    }
+  }
+
+  async function updateCartItem(lineKey, quantity, properties) {
+    try {
+      const response = await fetch('/cart/change.js', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: lineKey,
+          quantity: quantity,
+          properties: properties
+        })
+      });
+      return response.ok;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function isProductEligible(productId, variantId, campaign) {
+    if (!campaign.products || campaign.products.length === 0) return false;
+    
+    return campaign.products.some(p => {
+      const campaignProductId = extractId(p.id);
+      if (campaignProductId === String(productId)) return true;
+      
+      if (p.variants) {
+        return p.variants.some(v => extractId(v.id) === String(variantId));
+      }
+      return false;
+    });
+  }
+
+  async function processBogo() {
+    if (isProcessingBogo || bogoCampaigns.length === 0) return;
+    isProcessingBogo = true;
+
+    try {
+      const cart = await getCart();
+      if (!cart || !cart.items || cart.items.length === 0) {
+        isProcessingBogo = false;
+        return;
+      }
+
+      const stateSignature = JSON.stringify(cart.items.map(i => ({
+        id: i.id,
+        qty: i.quantity,
+        props: i.properties
+      })));
+      
+      if (stateSignature === lastCartState) {
+        isProcessingBogo = false;
+        return;
+      }
+      lastCartState = stateSignature;
+
+      let cartModified = false;
+
+      for (const campaign of bogoCampaigns) {
+        const buyQty = campaign.buyQuantity || 1;
+        const getQty = campaign.getQuantity || 1;
+        const maxFree = campaign.maxFreeItems || 1;
+
+        const eligibleItems = cart.items.filter(item => 
+          isProductEligible(item.product_id, item.variant_id, campaign) &&
+          (!item.properties || item.properties[BOGO_PROPERTY_KEY] !== 'true')
+        );
+
+        const freeItems = cart.items.filter(item =>
+          isProductEligible(item.product_id, item.variant_id, campaign) &&
+          item.properties && item.properties[BOGO_PROPERTY_KEY] === 'true'
+        );
+
+        const totalEligibleQty = eligibleItems.reduce((sum, item) => sum + item.quantity, 0);
+        const currentFreeQty = freeItems.reduce((sum, item) => sum + item.quantity, 0);
+
+        let earnedFreeQty = Math.floor(totalEligibleQty / buyQty) * getQty;
+        earnedFreeQty = Math.min(earnedFreeQty, maxFree);
+
+        if (currentFreeQty > earnedFreeQty) {
+          let excessToRemove = currentFreeQty - earnedFreeQty;
+          for (const item of freeItems) {
+            if (excessToRemove <= 0) break;
+            const removeQty = Math.min(item.quantity, excessToRemove);
+            const newProps = { ...item.properties };
+            delete newProps[BOGO_PROPERTY_KEY];
+            delete newProps['_bogo_campaign'];
+            await updateCartItem(item.key, item.quantity, newProps);
+            excessToRemove -= removeQty;
+            cartModified = true;
+          }
+        } else if (earnedFreeQty > currentFreeQty) {
+          let needToMark = earnedFreeQty - currentFreeQty;
+          
+          const sortedEligible = [...eligibleItems].sort((a, b) => 
+            (a.final_line_price / a.quantity) - (b.final_line_price / b.quantity)
+          );
+
+          for (const item of sortedEligible) {
+            if (needToMark <= 0) break;
+            const markQty = Math.min(item.quantity, needToMark);
+            
+            if (markQty === item.quantity) {
+              await updateCartItem(item.key, item.quantity, {
+                ...item.properties,
+                [BOGO_PROPERTY_KEY]: 'true',
+                '_bogo_campaign': campaign.id,
+                '_bogo_discount': campaign.discountType === 'free' ? '100' : campaign.discountValue
+              });
+              needToMark -= markQty;
+              cartModified = true;
+            }
+          }
+        }
+      }
+
+      if (cartModified) {
+        lastCartState = null;
+        triggerCartRefresh();
+      }
+
+    } catch (error) {
+      console.log('BOGO: Error processing cart', error);
+    }
+
+    isProcessingBogo = false;
+  }
+
+  // ============================================
+  // ORDER LIMITS FUNCTIONALITY
+  // ============================================
+  
+  let limitRules = [];
+  let isProcessingLimits = false;
+
+  function loadLimitRules() {
+    try {
+      const rulesEl = document.getElementById('order-limit-rules');
+      if (rulesEl) {
+        const data = JSON.parse(rulesEl.textContent);
+        limitRules = data.rules || [];
+      }
+    } catch (error) {
+      console.log('Order Limits: Could not parse rules', error);
+    }
+  }
+
+  function getProductLimit(productId) {
+    for (const rule of limitRules) {
+      if (!rule.enabled || rule.type !== 'product' || !rule.products) continue;
+      
+      for (const product of rule.products) {
+        const ruleProductId = extractProductId(product.id);
+        if (ruleProductId === String(productId)) {
+          return { limit: rule.maxQuantity, message: rule.message, rule };
+        }
+      }
+    }
+    return null;
+  }
+
+  function showErrorMessage(message) {
+    let errorContainer = document.querySelector('.order-limit-error');
+    if (!errorContainer) {
+      errorContainer = document.createElement('div');
+      errorContainer.className = 'order-limit-error';
+      document.body.appendChild(errorContainer);
+    }
+    
+    errorContainer.textContent = message;
+    errorContainer.style.display = 'block';
+    
+    setTimeout(() => {
+      if (errorContainer) {
+        errorContainer.style.display = 'none';
+      }
+    }, 5000);
+  }
+
+  async function checkCartLimits() {
+    if (isProcessingLimits || limitRules.length === 0) return;
+    
+    const cart = await getCart();
+    if (!cart) return;
+
+    const productQuantities = {};
+    
+    for (const item of cart.items) {
+      if (item.properties && (item.properties._gift || item.properties._gift_rule_id)) {
+        continue;
+      }
+      
+      const productId = String(item.product_id);
+      productQuantities[productId] = (productQuantities[productId] || 0) + item.quantity;
+    }
+
+    for (const [productId, quantity] of Object.entries(productQuantities)) {
+      const limitInfo = getProductLimit(productId);
+      if (limitInfo && quantity > limitInfo.limit) {
+        showErrorMessage(limitInfo.message || `Maximum ${limitInfo.limit} items allowed for this product`);
+        return;
+      }
+    }
+  }
+
+  async function getProductIdFromVariant(variantId) {
+    try {
+      const response = await fetch(`/products.json?limit=250`);
+      const data = await response.json();
+      
+      for (const product of data.products) {
+        const variant = product.variants.find(v => String(v.id) === String(variantId));
+        if (variant) {
+          return String(product.id);
+        }
+      }
+      return null;
+    } catch (error) {
+      console.log('Order Limits: Error getting product ID', error);
+      return null;
+    }
+  }
+
+  function interceptCartAdditions() {
+    const originalFetch = window.fetch;
+    window.fetch = async function(...args) {
+      const url = args[0];
+      const options = args[1] || {};
+      
+      if (typeof url === 'string' && url.includes('/cart/add')) {
+        try {
+          let body = options.body;
+          if (body) {
+            let addData;
+            if (typeof body === 'string') {
+              if (body.startsWith('{')) {
+                addData = JSON.parse(body);
+              } else {
+                const params = new URLSearchParams(body);
+                addData = {
+                  id: params.get('id'),
+                  quantity: parseInt(params.get('quantity')) || 1
+                };
+              }
+            } else if (body instanceof FormData) {
+              addData = {
+                id: body.get('id'),
+                quantity: parseInt(body.get('quantity')) || 1
+              };
+            }
+
+            if (addData && addData.id) {
+              const cart = await getCart();
+              if (cart) {
+                let productId = null;
+                
+                const existingItem = cart.items.find(item => String(item.variant_id) === String(addData.id));
+                if (existingItem) {
+                  productId = String(existingItem.product_id);
+                } else {
+                  productId = await getProductIdFromVariant(addData.id);
+                }
+
+                if (productId) {
+                  const currentQuantity = cart.items
+                    .filter(item => 
+                      String(item.product_id) === productId && 
+                      (!item.properties || (!item.properties._gift && !item.properties._gift_rule_id && !item.properties._sample))
+                    )
+                    .reduce((sum, item) => sum + item.quantity, 0);
+
+                  const newQuantity = currentQuantity + addData.quantity;
+                  const limitInfo = getProductLimit(productId);
+
+                  if (limitInfo && newQuantity > limitInfo.limit) {
+                    showErrorMessage(limitInfo.message || `Maximum ${limitInfo.limit} items allowed for this product`);
+                    
+                    return new Response(JSON.stringify({ 
+                      status: 'error', 
+                      message: 'Limit exceeded',
+                      description: limitInfo.message 
+                    }), {
+                      status: 422,
+                      headers: { 'Content-Type': 'application/json' }
+                    });
+                  }
+                }
+              }
+            }
+          }
+        } catch (error) {
+          console.log('Order Limits: Error checking limits', error);
+        }
+      }
+
+      const response = await originalFetch.apply(this, args);
+      
+      if (typeof url === 'string' && (url.includes('/cart/add') || url.includes('/cart/change') || url.includes('/cart/update'))) {
+        setTimeout(() => {
+          checkCartLimits();
+          processGifts();
+          processBogo();
+          updateShippingBar();
+        }, 100);
+      }
+      
+      return response;
+    };
+
+    document.addEventListener('submit', function(e) {
+      const form = e.target;
+      if (form && form.action && form.action.includes('/cart/add')) {
+        setTimeout(checkCartLimits, 500);
+      }
+    });
+
+    document.addEventListener('change', function(e) {
+      if (e.target && e.target.name && e.target.name.includes('quantity')) {
+        setTimeout(checkCartLimits, 100);
+      }
+    });
+  }
+
+  // ============================================
+  // FREE SHIPPING BAR FUNCTIONALITY
+  // ============================================
+  
+  const threshold = {{ shipping_threshold }};
+  const messageTemplate = {{ shipping_message | json }};
+  const successMessage = {{ shipping_success_message | json }};
+  
+  const bar = document.getElementById('free-shipping-bar');
+  const messageEl = document.getElementById('shipping-message');
+  const progressFill = document.getElementById('shipping-progress-fill');
+
+  function formatMoney(cents) {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0
+    }).format(cents / 100);
+  }
+
+  function updateShippingBar() {
+    getCart().then(cart => {
+      if (!cart) return;
+
+      const cartTotal = cart.items
+        .filter(item => !item.properties || (!item.properties._gift && !item.properties._gift_rule_id))
+        .reduce((sum, item) => sum + (item.line_price / 100), 0);
+
+      const remaining = Math.max(0, threshold - cartTotal);
+      const percentage = Math.min(100, (cartTotal / threshold) * 100);
+
+      if (cartTotal >= threshold) {
+        bar.classList.add('free-shipping-bar--qualified');
+        messageEl.textContent = successMessage;
+        progressFill.style.width = '100%';
+        bar.style.display = 'block';
+      } else if (cartTotal > 0) {
+        bar.classList.remove('free-shipping-bar--qualified');
+        const formattedAmount = formatMoney(remaining * 100);
+        messageEl.textContent = messageTemplate.replace('{amount}', formattedAmount);
+        progressFill.style.width = `${percentage}%`;
+        bar.style.display = 'block';
+      } else {
+        bar.style.display = 'none';
+      }
+    });
+  }
+
+  // ============================================
+  // INITIALIZATION
+  // ============================================
+  
+  function init() {
+    // Load all data
+    loadGiftRules();
+    loadBogoCampaigns();
+    loadLimitRules();
+
+    // Set up order limits interception
+    if (limitRules.length > 0) {
+      interceptCartAdditions();
+      checkCartLimits();
+    }
+
+    // Initial processing
+    processGifts();
+    processBogo();
+    updateShippingBar();
+
+    // Debounced processors
+    const debouncedGifts = debounce(() => {
+      lastCartToken = null;
+      processGifts();
+    }, 500);
+
+    const debouncedBogo = debounce(() => {
+      lastCartState = null;
+      processBogo();
+    }, 800);
+
+    const debouncedLimits = debounce(checkCartLimits, 300);
+
+    // Listen for cart update events
+    document.addEventListener('cart:update', () => {
+      debouncedGifts();
+      debouncedBogo();
+      debouncedLimits();
+      updateShippingBar();
+    });
+    
+    // Also listen for legacy events
+    document.addEventListener('cart:updated', () => {
+      debouncedGifts();
+      debouncedBogo();
+      debouncedLimits();
+      updateShippingBar();
+    });
+    document.addEventListener('cart:change', () => {
+      debouncedGifts();
+      debouncedBogo();
+      debouncedLimits();
+      updateShippingBar();
+    });
+    document.addEventListener('cart:refresh', () => {
+      debouncedGifts();
+      debouncedBogo();
+      debouncedLimits();
+      updateShippingBar();
+    });
+  }
+
+  // Start when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    init();
+  }
+  
+  // Also try after a delay for safety
+  setTimeout(init, 1000);
+})();
+</script>
