@@ -1,5 +1,25 @@
 {% assign product = closest.product %}
 
+{% comment %} Check for custom badges via product tags {% endcomment %}
+{% assign has_trial_badge = false %}
+{% assign has_bogo_badge = false %}
+{% assign has_bestseller_badge = false %}
+
+{% comment %} Check for TRIAL badge - via product tag {% endcomment %}
+{% if product.tags contains 'trial' or product.tags contains 'TRIAL' %}
+  {% assign has_trial_badge = true %}
+{% endif %}
+
+{% comment %} Check for BOGO badge - via product tag {% endcomment %}
+{% if product.tags contains 'bogo' or product.tags contains 'BOGO' %}
+  {% assign has_bogo_badge = true %}
+{% endif %}
+
+{% comment %} Check for BEST SELLER badge - via product tag {% endcomment %}
+{% if product.tags contains 'bestseller' or product.tags contains 'BEST SELLER' or product.tags contains 'best-seller' or product.tags contains 'best seller' %}
+  {% assign has_bestseller_badge = true %}
+{% endif %}
+
 {% capture children %}
   {% unless product == blank %}
     <div
@@ -9,18 +29,36 @@
         --badge-font-family: var(--font-{{ settings.badge_font_family }}--family); --badge-font-weight: var(--font-{{ settings.badge_font_family }}--weight); --badge-text-transform: {{ settings.badge_text_transform }};
       "
     >
-      {%- if product.available == false or product.compare_at_price > product.price -%}
+      {% comment %} Priority order: Sold Out > Sale > Trial > BOGO > Best Seller {% endcomment %}
+      {%- if product.available == false -%}
         <div
-          class="
-            product-badges__badge product-badges__badge--rectangle
-            {% if product.available == false %} color-{{ settings.badge_sold_out_color_scheme }}{% elsif product.compare_at_price > product.price %} color-{{ settings.badge_sale_color_scheme }}{% endif %}
-          "
+          class="product-badges__badge product-badges__badge--rectangle color-{{ settings.badge_sold_out_color_scheme }}"
         >
-          {%- if product.available == false -%}
-            {{ 'content.product_badge_sold_out' | t }}
-          {%- elsif product.compare_at_price > product.price -%}
-            {{ 'content.product_badge_sale' | t }}
-          {%- endif -%}
+          {{ 'content.product_badge_sold_out' | t }}
+        </div>
+      {%- elsif product.compare_at_price > product.price -%}
+        <div
+          class="product-badges__badge product-badges__badge--rectangle color-{{ settings.badge_sale_color_scheme }}"
+        >
+          {{ 'content.product_badge_sale' | t }}
+        </div>
+      {%- elsif has_trial_badge -%}
+        <div
+          class="product-badges__badge product-badges__badge--rectangle product-badges__badge--trial"
+        >
+          TRIAL
+        </div>
+      {%- elsif has_bogo_badge -%}
+        <div
+          class="product-badges__badge product-badges__badge--rectangle product-badges__badge--bogo"
+        >
+          BOGO
+        </div>
+      {%- elsif has_bestseller_badge -%}
+        <div
+          class="product-badges__badge product-badges__badge--rectangle product-badges__badge--bestseller"
+        >
+          BEST SELLER
         </div>
       {%- endif -%}
     </div>
@@ -40,6 +78,60 @@
     <h3 class="h4">{{ product.title }}</h3>
   {% endif %}
 </div>
+
+{% comment %} JavaScript to dynamically add BOGO badges based on active campaigns {% endcomment %}
+{% unless product == blank %}
+  <script>
+    (function() {
+      'use strict';
+      
+      {% comment %} Get BOGO campaigns from metafield {% endcomment %}
+      const bogoCampaignsEl = document.getElementById('bogo-campaigns');
+      if (!bogoCampaignsEl) return;
+      
+      try {
+        const campaigns = JSON.parse(bogoCampaignsEl.textContent) || [];
+        const activeCampaigns = campaigns.filter(c => c.enabled);
+        
+        {% comment %} Extract product ID from Shopify GID {% endcomment %}
+        const productId = '{{ product.id }}';
+        const productIdNum = productId.split('/').pop();
+        
+        {% comment %} Check if this product is in any active BOGO campaign {% endcomment %}
+        let isInBogo = false;
+        for (const campaign of activeCampaigns) {
+          if (campaign.products && campaign.products.length > 0) {
+            for (const campaignProduct of campaign.products) {
+              const campaignProductId = String(campaignProduct.id).split('/').pop();
+              if (campaignProductId === productIdNum) {
+                isInBogo = true;
+                break;
+              }
+            }
+          }
+          if (isInBogo) break;
+        }
+        
+        {% comment %} If product is in BOGO and doesn't already have a badge, add BOGO badge {% endcomment %}
+        if (isInBogo) {
+          const badgesContainer = document.querySelector('#product-card-{{ block.id }} .product-badges');
+          if (badgesContainer) {
+            {% comment %} Only add if no other badge is showing (sold out or sale take priority) {% endcomment %}
+            const existingBadge = badgesContainer.querySelector('.product-badges__badge');
+            if (!existingBadge) {
+              const bogoBadge = document.createElement('div');
+              bogoBadge.className = 'product-badges__badge product-badges__badge--rectangle product-badges__badge--bogo';
+              bogoBadge.textContent = 'BOGO';
+              badgesContainer.appendChild(bogoBadge);
+            }
+          }
+        }
+      } catch (error) {
+        console.log('Error checking BOGO campaigns:', error);
+      }
+    })();
+  </script>
+{% endunless %}
 
 {% stylesheet %}
   .product-badges {
@@ -83,6 +175,21 @@
   .product-badges__badge--rectangle {
     padding-block: var(--badge-rectangle-padding-block);
     padding-inline: var(--badge-rectangle-padding-inline);
+  }
+
+  .product-badges__badge--trial {
+    background: rgb(var(--color-button));
+    color: rgb(var(--color-button-text));
+  }
+
+  .product-badges__badge--bogo {
+    background: rgb(var(--color-success));
+    color: rgb(var(--color-success-text));
+  }
+
+  .product-badges__badge--bestseller {
+    background: rgb(var(--color-accent));
+    color: rgb(var(--color-accent-text));
   }
 {% endstylesheet %}
 
