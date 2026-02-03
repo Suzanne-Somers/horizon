@@ -481,4 +481,85 @@
       transition-timing-function: var(--surface-transition-timing);
     }
   }
+
+  /* Hide Shopify subscription/recurring purchase disclosure */
+  shopify-payment-terms {
+    display: none !important;
+  }
+
+  .cart__installments shopify-payment-terms {
+    display: none !important;
+  }
+
+  /* Hide subscription disclosure text if it appears elsewhere */
+  [class*="subscription"],
+  [class*="recurring"],
+  [id*="subscription"],
+  [id*="recurring"] {
+    display: none !important;
+  }
+
+  /* Hide any disclosure containing recurring/deferred purchase text */
+  *:has-text("recurring"),
+  *:has-text("deferred purchase"),
+  *:has-text("cancellation policy"),
+  *:has-text("authorize you to charge") {
+    display: none !important;
+  }
 {% endstylesheet %}
+
+<script>
+(function() {
+  'use strict';
+  
+  // Function to hide subscription disclosure messages
+  function hideSubscriptionDisclosure() {
+    // Hide shopify-payment-terms component
+    const paymentTerms = document.querySelectorAll('shopify-payment-terms');
+    paymentTerms.forEach(el => {
+      el.style.display = 'none';
+      // Also hide shadow DOM content if accessible
+      if (el.shadowRoot) {
+        const style = document.createElement('style');
+        style.textContent = '* { display: none !important; }';
+        el.shadowRoot.appendChild(style);
+      }
+    });
+    
+    // Hide any elements containing the disclosure text
+    const allElements = document.querySelectorAll('*');
+    allElements.forEach(el => {
+      const text = el.textContent || '';
+      if (text.includes('recurring or deferred purchase') || 
+          text.includes('cancellation policy') ||
+          text.includes('authorize you to charge my payment method')) {
+        el.style.display = 'none';
+      }
+    });
+  }
+  
+  // Run immediately
+  hideSubscriptionDisclosure();
+  
+  // Run when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', hideSubscriptionDisclosure);
+  }
+  
+  // Run after a delay to catch dynamically loaded content
+  setTimeout(hideSubscriptionDisclosure, 500);
+  setTimeout(hideSubscriptionDisclosure, 1000);
+  
+  // Watch for cart updates
+  document.addEventListener('cart:update', hideSubscriptionDisclosure);
+  document.addEventListener('cart:updated', hideSubscriptionDisclosure);
+  document.addEventListener('cart:change', hideSubscriptionDisclosure);
+  
+  // Use MutationObserver to catch dynamically added content
+  const observer = new MutationObserver(hideSubscriptionDisclosure);
+  observer.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+})();
+</script>
