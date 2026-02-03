@@ -839,6 +839,12 @@
         progressFill.style.width = `${percentage}%`;
         progressFill.style.background = 'rgb(var(--color-button))';
       }
+      
+      // Hide app embed shipping bar if it exists in cart drawer
+      const appEmbedBar = document.querySelector('.cart-drawer #free-shipping-bar, cart-drawer-component #free-shipping-bar');
+      if (appEmbedBar) {
+        appEmbedBar.style.display = 'none';
+      }
     }).catch(error => {
       console.log('Cart drawer shipping: Error updating bar', error);
     });
