@@ -751,6 +751,12 @@
       --cart-bubble-right: 4px;
     }
   }
+
+  /* Hide Shopify subscription/recurring purchase disclosure in cart drawer */
+  .cart-drawer shopify-payment-terms,
+  .cart-drawer__summary shopify-payment-terms {
+    display: none !important;
+  }
 {% endstylesheet %}
 
 {% comment %} Free Shipping Bar JavaScript for Cart Drawer {% endcomment %}
@@ -858,6 +864,58 @@
     document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
+  }
+  
+  // Hide subscription disclosure in cart drawer
+  function hideSubscriptionDisclosure() {
+    const cartDrawer = document.querySelector('.cart-drawer, cart-drawer-component');
+    if (cartDrawer) {
+      const paymentTerms = cartDrawer.querySelectorAll('shopify-payment-terms');
+      paymentTerms.forEach(el => {
+        el.style.display = 'none';
+        if (el.shadowRoot) {
+          const style = document.createElement('style');
+          style.textContent = '* { display: none !important; }';
+          el.shadowRoot.appendChild(style);
+        }
+      });
+      
+      // Hide any elements containing disclosure text
+      const allElements = cartDrawer.querySelectorAll('*');
+      allElements.forEach(el => {
+        const text = el.textContent || '';
+        if (text.includes('recurring or deferred purchase') || 
+            text.includes('cancellation policy') ||
+            text.includes('authorize you to charge my payment method')) {
+          el.style.display = 'none';
+        }
+      });
+    }
+  }
+  
+  // Hide disclosure when cart drawer opens
+  const cartDrawerComponent = document.querySelector('cart-drawer-component');
+  if (cartDrawerComponent) {
+    cartDrawerComponent.addEventListener('dialog:opened', () => {
+      setTimeout(hideSubscriptionDisclosure, 100);
+    });
+  }
+  
+  // Watch for cart updates
+  document.addEventListener('cart:update', hideSubscriptionDisclosure);
+  document.addEventListener('cart:updated', hideSubscriptionDisclosure);
+  
+  // Use MutationObserver for cart drawer
+  const drawerObserver = new MutationObserver(() => {
+    hideSubscriptionDisclosure();
+  });
+  
+  const drawerElement = document.querySelector('.cart-drawer, cart-drawer-component');
+  if (drawerElement) {
+    drawerObserver.observe(drawerElement, {
+      childList: true,
+      subtree: true
+    });
   }
 })();
 </script>
